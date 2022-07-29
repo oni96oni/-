@@ -1,0 +1,150 @@
+조회수증가 제어하는 방법 3가지
+
+//쿠키
+Cookie cookies[] = request.getCookies();
+    Cookie cookie = null;
+    for(Cookie c : cookies) {
+      if(c.getName().equals(String.valueOf(data.getId()))) {
+        c.getValue();
+        cookie = new Cookie(String.valueOf(data.getId()),"");
+      }
+    }
+
+    // 쿠키가 없으면 조회수를 늘리고 새로 쿠키를 만들어서 클라이언트에게 보낸다
+    if(cookie == null) {
+      service.incViewCnt(data);
+      cookie = new Cookie(String.valueOf(data.getId()), "");
+      response.addCookie(cookie);
+    }
+      
+//세션(1) -SERVICE
+public void boardCount(String data) {
+  String mapperId = String.format(mapper, "updateViewCnt");
+  SqlSessionFactory sqlMapper = null;
+  session = sqlMapper.openSession();
+  session.update(mapperId, data);
+  session.commit();
+  session.close();
+	}
+  
+//세션(2) - CONTROLLER
+HttpSession session = request.getSession();
+			
+    List<String> boardViewList = new ArrayList<String>();
+    Iterator<String> sessionNames = session.getAttributeNames().asIterator();
+    while(sessionNames.hasNext()) {
+      if(sessionNames.next().equals("boardViewList")) {
+        boardViewList = (ArrayList<String>) session.getAttribute("boardViewList");
+      }
+    }
+
+    if(boardViewList == null) {
+      boardViewList = new ArrayList<String>();
+    }
+
+    if(!boardViewList.contains(String.valueOf(data.getId()))) {
+      service.incViewCnt(data);
+      boardViewList.add(String.valueOf(data.getId()));
+    }
+
+    session.setAttribute("boardViewList", boardViewList);
+
+//DB
+TABLE생성(DB)
+CREATE TABLE EMP_BOARD_STATICS(
+	   ID NUMBER PRIMARY KEY,
+	   EMPID NUMBER,
+	   BID NUMBER,
+	   VIEWED VARCHAR2(1) CHECK(VIEWED IN('Y', 'N')),
+	   LATEST_VIEW_DATE DATE,
+	   CONSTRAINT EMP_BOARDS_STATICS_EMPID_FK FOREIGN KEY(EMPID) REFERENCES EMPLOYEES(EMPLOYEE_ID),
+	   CONSTRAINT EMP_BOARDS_STATICS_BID_FK FOREIGN KEY(BID) REFERENCES EMP_BOARDS(ID)
+);
+
+emp_boards.xml
+<select id="selectStatics" parameterType="empBoardStaticsDto" resultType="empBoardStaticsDto">
+		SELECT ID, EMPID, BID
+			 , VIEWED
+			 , LATEST_VIEW_DATE AS latestViewDate
+		  FROM EMP_BOARDS_STATICS
+		 WHERE EMPID = #{empId}
+		   AND BID = #{bId}
+	</select>
+	<insert id="insertStatics" parameterType="empBoardStaticsDto">
+		INSERT INTO EMP_BOARDS_STATICS
+			 VALUES(EMP_BOARDS_STATICS_SEQ.NEXTVAL
+			 	  , #{empId}, #{bId}, 'Y', SYSDATE)
+	</insert>
+  
+  EmpBoardDAO.java
+  public EmpBoardStaticsDTO selectStatics(EmpBoardStaticsDTO staticsData) {
+		String mapperId = String.format(mapper, "selectStatics");
+		EmpBoardStaticsDTO data = session.selectOne(mapperId, staticsData);
+		return data;
+	}
+	
+	public boolean insertStatics(EmpBoardStaticsDTO staticsData) {
+		String mapperId = String.format(mapper, "insertStatics");
+		int res = session.insert(mapperId, staticsData);
+		return res == 1 ? true : false;
+	}
+  
+  EmpBoardService.java
+  public void incViewCnt(HttpSession session, EmpBoardDTO data) {
+		EmpBoardDAO dao = new EmpBoardDAO();
+		
+		// 조회카운트를 늘리기 전에 조회를 했었던 기록이 있는지 확인
+		EmpBoardStaticsDTO staticsData = new EmpBoardStaticsDTO();
+		staticsData.setbId(data.getId());
+		staticsData.setEmpId(((EmpsDTO)session.getAttribute("loginData")).getEmpId());
+		staticsData = dao.selectStatics(staticsData);
+		System.out.println(staticsData);
+		boolean result = false;
+		
+		// 기록이 없으면 카운트를 늘리고 기록을 남긴다.
+		if(staticsData == null) {
+			result = dao.updateViewCnt(data);
+			
+			staticsData = new EmpBoardStaticsDTO();
+			staticsData.setbId(data.getId());
+			staticsData.setEmpId(((EmpsDTO)session.getAttribute("loginData")).getEmpId());
+			
+			dao.insertStatics(staticsData);
+		}
+		
+		if(result) {
+			data.setViewCnt(data.getViewCnt() + 1);
+			dao.commit();
+			dao.close();
+		}
+		dao.rollback();
+		dao.close();
+	}
+  
+  EmpBoardDetailController
+  protected void doGet(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
+		String view = "/WEB-INF/jsp/board/detail.jsp";
+		String id = request.getParameter("id");
+		
+		EmpsService empsService = new EmpsService();
+		
+		EmpBoardDTO data = service.getData(Integer.parseInt(id));
+		
+		if(data != null) {
+			HttpSession session = request.getSession();
+			
+			service.incViewCnt(session, data);
+			EmpsDTO empData = empsService.getId("" + data.getEmpId());
+			
+			request.setAttribute("data", data);
+			request.setAttribute("empData", empData);
+			
+			RequestDispatcher rd = request.getRequestDispatcher(view);
+			rd.forward(request, response);
+		} else {
+			// 데이터가 조회되지 않은 경우
+			// 별도의 에러 페이지로 전환
+		}
+	}
+  
+  
